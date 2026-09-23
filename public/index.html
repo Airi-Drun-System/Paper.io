@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Territory.io — играй с друзьями</title>
+<style>
+  :root{ --bg:#0d1117; --panel:#161b22; --accent:#5da9ff; --text:#e6edf3; }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;overflow:hidden;height:100%;}
+  #lobby{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:20px;}
+  #lobby.hidden, #hud.hidden, #deathOverlay.hidden{display:none !important;}
+  h1{font-size:28px;margin:0 0 4px;text-align:center;}
+  .sub{opacity:.65;font-size:14px;text-align:center;max-width:320px;}
+  .panel{background:var(--panel);border-radius:16px;padding:20px;width:min(340px,90vw);display:flex;flex-direction:column;gap:10px;box-shadow:0 10px 30px rgba(0,0,0,.4);}
+  input{background:#0d1117;border:1px solid #30363d;color:var(--text);padding:12px 14px;border-radius:10px;font-size:16px;outline:none;}
+  input:focus{border-color:var(--accent);}
+  button{border:none;cursor:pointer;font-weight:700;font-size:15px;padding:13px 18px;border-radius:10px;background:linear-gradient(180deg,#6db4ff,#3d84e0);color:#04101f;transition:transform .08s ease;}
+  button:active{transform:translateY(2px);}
+  button.ghost{background:rgba(255,255,255,.08);color:var(--text);}
+  .row{display:flex;gap:8px;}
+  .row input{flex:1;text-transform:uppercase;letter-spacing:2px;}
+  #errMsg{color:#ff6b6b;font-size:13px;min-height:16px;text-align:center;}
+  #codeBanner{position:fixed;top:10px;left:50%;transform:translateX(-50%);background:rgba(22,27,34,.9);padding:8px 16px;border-radius:999px;font-size:14px;z-index:5;display:flex;gap:8px;align-items:center;}
+  #codeBanner b{letter-spacing:3px;color:var(--accent);}
+  #gameCanvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none;}
+  #hud{position:fixed;top:10px;right:10px;display:flex;flex-direction:column;gap:4px;background:rgba(22,27,34,.85);padding:10px 14px;border-radius:12px;font-size:13px;min-width:150px;z-index:5;}
+  .hudRow{display:flex;justify-content:space-between;gap:10px;}
+  .hudDot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:6px;vertical-align:-1px;}
+  #deathOverlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:6;}
+  #deathOverlay .card{background:var(--panel);padding:26px 30px;border-radius:16px;text-align:center;}
+  #touchPad{position:fixed;bottom:18px;left:0;right:0;display:flex;justify-content:center;gap:10px;z-index:5;}
+  .padBtn{width:58px;height:58px;border-radius:14px;background:rgba(255,255,255,.12);display:flex;align-items:center;justify-content:center;font-size:24px;user-select:none;}
+  #padGrid{display:grid;grid-template-columns:repeat(3,60px);grid-template-rows:repeat(3,60px);gap:6px;}
+</style>
+</head>
+<body>
+
+<div id="lobby">
+  <h1>Territory.io</h1>
+  <p class="sub">Захватывай территорию, обрезай след соперника, играй с друзьями по коду комнаты.</p>
+  <div class="panel">
+    <input id="nameInput" maxlength="16" placeholder="Твой ник">
+    <button id="createBtn">Создать комнату</button>
+  </div>
+  <div class="panel">
+    <div class="row">
+      <input id="codeInput" maxlength="4" placeholder="КОД">
+      <button id="joinBtn" style="flex:0 0 auto;">Войти</button>
+    </div>
+  </div>
+  <div id="errMsg"></div>
+</div>
+
+<div id="codeBanner" class="hidden">
+  Код комнаты: <b id="codeText"></b>
+</div>
+
+<canvas id="gameCanvas"></canvas>
+
+<div id="hud" class="hidden"></div>
+
+<div id="deathOverlay" class="hidden">
+  <div class="card">
+    <div style="font-size:20px;font-weight:800;margin-bottom:6px;">Тебя срезали</div>
+    <div id="respawnText" style="opacity:.7;"></div>
+  </div>
+</div>
+
+<div id="touchPad" class="hidden">
+  <div id="padGrid">
+    <div></div><div class="padBtn" data-dx="0" data-dy="-1">▲</div><div></div>
+    <div class="padBtn" data-dx="-1" data-dy="0">◀</div><div></div><div class="padBtn" data-dx="1" data-dy="0">▶</div>
+    <div></div><div class="padBtn" data-dx="0" data-dy="1">▼</div><div></div>
+  </div>
+</div>
+
+<script>
+(function(){
+  const lobbyEl = document.getElementById('lobby');
+  const codeBannerEl = document.getElementById('codeBanner');
+  const codeTextEl = document.getElementById('codeText');
+  const hudEl = document.getElementById('hud');
+  const errMsgEl = document.getElementById('errMsg');
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+  const deathOverlayEl = document.getElementById('deathOverlay');
+  const respawnTextEl = document.getElementById('respawnText');
+  const touchPadEl = document.getElementById('touchPad');
+
+  const isTouchDevice = (navigator.maxTouchPoints > 0) ||
+    (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) ||
+    ('ontouchstart' in window);
+
+  let ws = null;
+  let myId = null;
+  let mySlot = null;
+  let gridSize = 50;
+  let latestState = null;
+  let cellPx = 16;
+
+  function resize(){
+    canvas.width = window.innerWidth * devicePixelRatio;
+    canvas.height = window.innerHeight * devicePixelRatio;
+    canvas.style.width = window.innerWidth + 'px';
+    canvas.style.height = window.innerHeight + 'px';
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  function wsUrl(){
+    const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+    return proto + location.host;
+  }
+
+  function connect(){
+    ws = new WebSocket(wsUrl());
+    ws.addEventListener('open', () => { errMsgEl.textContent = ''; });
+    ws.addEventListener('message', (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      handleMessage(msg);
+    });
+    ws.addEventListener('close', () => {
+      errMsgEl.textContent = 'Соединение потеряно. Обнови страницу.';
+    });
+    ws.addEventListener('error', () => {});
+  }
+
+  function handleMessage(msg){
+    if (msg.t === 'joined'){
+      myId = msg.you;
+      mySlot = msg.slot;
+      gridSize = msg.grid;
+      lobbyEl.classList.add('hidden');
+      codeBannerEl.classList.remove('hidden');
+      codeTextEl.textContent = msg.code;
+      hudEl.classList.remove('hidden');
+      if (isTouchDevice) touchPadEl.classList.remove('hidden');
+      return;
+    }
+    if (msg.t === 'error'){
+      errMsgEl.textContent = msg.msg;
+      return;
+    }
+    if (msg.t === 'state'){
+      latestState = msg;
+      renderHud(msg);
+      return;
+    }
+  }
+
+  function renderHud(state){
+    const me = state.players.find(p => p.id === myId);
+    const sorted = state.players.slice().sort((a,b) => b.score - a.score);
+    let html = '';
+    for (const p of sorted){
+      html += '<div class="hudRow"><span><span class="hudDot" style="background:' + p.color + '"></span>' +
+        escapeHtml(p.name) + (p.id === myId ? ' (ты)' : '') + '</span><b>' + p.score + '</b></div>';
+    }
+    hudEl.innerHTML = html;
+
+    if (me && !me.alive){
+      deathOverlayEl.classList.remove('hidden');
+      respawnTextEl.textContent = 'Возрождение через ' + Math.ceil(me.respawnIn / 1000) + 'с';
+    } else {
+      deathOverlayEl.classList.add('hidden');
+    }
+  }
+
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function sendInput(dx, dy){
+    if (!ws || ws.readyState !== 1) return;
+    ws.send(JSON.stringify({ t: 'input', dx, dy }));
+  }
+
+  document.getElementById('createBtn').addEventListener('click', () => {
+    if (!ws) connect();
+    const trySend = () => {
+      if (ws.readyState === 1){
+        ws.send(JSON.stringify({ t: 'create', name: document.getElementById('nameInput').value }));
+      } else {
+        setTimeout(trySend, 60);
+      }
+    };
+    trySend();
+  });
+
+  document.getElementById('joinBtn').addEventListener('click', () => {
+    const code = document.getElementById('codeInput').value.toUpperCase().trim();
+    if (!code){ errMsgEl.textContent = 'Введи код комнаты'; return; }
+    if (!ws) connect();
+    const trySend = () => {
+      if (ws.readyState === 1){
+        ws.send(JSON.stringify({ t: 'join', code, name: document.getElementById('nameInput').value }));
+      } else {
+        setTimeout(trySend, 60);
+      }
+    };
+    trySend();
+  });
+
+  const keyMap = {
+    ArrowUp: [0,-1], ArrowDown: [0,1], ArrowLeft: [-1,0], ArrowRight: [1,0],
+    KeyW: [0,-1], KeyS: [0,1], KeyA: [-1,0], KeyD: [1,0]
+  };
+  window.addEventListener('keydown', (e) => {
+    const dir = keyMap[e.code];
+    if (!dir) return;
+    sendInput(dir[0], dir[1]);
+  });
+
+  document.querySelectorAll('.padBtn').forEach(btn => {
+    btn.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      sendInput(Number(btn.dataset.dx), Number(btn.dataset.dy));
+    }, { passive: false });
+    btn.addEventListener('mousedown', () => {
+      sendInput(Number(btn.dataset.dx), Number(btn.dataset.dy));
+    });
+  });
+
+  function draw(){
+    requestAnimationFrame(draw);
+    if (!latestState) return;
+    const w = canvas.width, h = canvas.height;
+    ctx.fillStyle = '#0d1117';
+    ctx.fillRect(0, 0, w, h);
+
+    const me = latestState.players.find(p => p.id === myId);
+    const camX = me ? me.x : gridSize / 2;
+    const camY = me ? me.y : gridSize / 2;
+    cellPx = Math.min(w, h) / 16;
+
+    ctx.save();
+    ctx.translate(w / 2 - camX * cellPx, h / 2 - camY * cellPx);
+
+    const owner = latestState.owner;
+    const grid = latestState.grid;
+    const colors = ['#0d1117'].concat(latestState.players.length ? latestState.players.map(p => p.color) : []);
+    const slotColor = {};
+    for (const p of latestState.players) slotColor[p.slot] = p.color;
+
+    for (let cy = 0; cy < grid; cy++){
+      for (let cx = 0; cx < grid; cx++){
+        const slot = owner.charCodeAt(cy * grid + cx) - 48;
+        if (slot === 0) continue;
+        ctx.fillStyle = hexAlpha(slotColor[slot] || '#888', 0.55);
+        ctx.fillRect(cx * cellPx, cy * cellPx, cellPx + 1, cellPx + 1);
+      }
+    }
+
+    ctx.strokeStyle = 'rgba(255,255,255,.08)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(0, 0, grid * cellPx, grid * cellPx);
+
+    for (const p of latestState.players){
+      if (!p.trail || !p.trail.length) continue;
+      ctx.fillStyle = p.color;
+      for (const c of p.trail){
+        ctx.fillRect(c.cx * cellPx, c.cy * cellPx, cellPx, cellPx);
+      }
+    }
+
+    for (const p of latestState.players){
+      if (!p.alive) continue;
+      ctx.beginPath();
+      ctx.fillStyle = p.color;
+      ctx.arc(p.x * cellPx, p.y * cellPx, cellPx * 0.55, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#04101f';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = '#e6edf3';
+      ctx.font = (cellPx * 0.7) + 'px system-ui';
+      ctx.textAlign = 'center';
+      ctx.fillText(p.name, p.x * cellPx, p.y * cellPx - cellPx);
+    }
+
+    ctx.restore();
+  }
+
+  function hexAlpha(hex, alpha){
+    const c = hex.replace('#','');
+    const r = parseInt(c.substring(0,2),16), g = parseInt(c.substring(2,4),16), b = parseInt(c.substring(4,6),16);
+    return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+  }
+
+  requestAnimationFrame(draw);
+})();
+</script>
+</body>
+</html>
