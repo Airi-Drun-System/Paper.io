@@ -1,0 +1,14 @@
+{
+  "name": "paperio-friends",
+  "version": "1.0.0",
+  "private": true,
+  "main": "server.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/gameLogic.test.js && node test/e2e.test.js"
+  },
+  "dependencies": {}
+}
